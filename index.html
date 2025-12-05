@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Cardio Smart Dashboard - Final Project</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/fhirclient/build/fhir-client.js"></script>
+    
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        select { padding: 10px; font-size: 16px; border-radius: 5px; border: 1px solid #ddd; min-width: 300px; }
+        .patient-banner { display: flex; gap: 20px; background: #e3f2fd; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 5px solid #2196F3; }
+        .vital-card { background: white; padding: 10px 20px; border-radius: 5px; font-weight: bold; color: #555; }
+        .dashboard-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        h2 { margin-top: 0; font-size: 18px; color: #333; border-bottom: 2px solid #f0f0f0; padding-bottom: 10px; }
+        .med-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #eee; }
+        .med-stopped { text-decoration: line-through; color: #999; background-color: #f9f9f9; }
+        button.btn-stop { background: #ff5252; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; }
+        button.btn-add { background: #4caf50; color: white; border: none; padding: 10px; width: 100%; border-radius: 4px; cursor: pointer; margin-top: 10px; }
+        .loading { text-align: center; color: #666; display: none; margin: 20px 0; font-size: 18px;}
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <h1>🏥 Cardio Management Dashboard</h1>
+        <div>
+            <label>Select Patient: </label>
+            <select id="patientSelect" onchange="loadPatientData()"></select>
+        </div>
+    </div>
+
+    <div id="loading" class="loading">⏳ Loading patient data... analyzing records...</div>
+
+    <div id="dashboard" style="display:none;">
+        <div class="patient-banner">
+            <div id="patName" class="vital-card">Name: -</div>
+            <div id="patGender" class="vital-card">Gender: -</div>
+            <div id="patAge" class="vital-card">DOB: -</div>
+            <div id="patBMI" class="vital-card">BMI: Calculating...</div>
+            <div id="patBP" class="vital-card">BP: Calculating...</div>
+        </div>
+
+        <div class="dashboard-grid">
+            <div class="card">
+                <h2>📊 Blood Pressure vs BMI Trends</h2>
+                <canvas id="vitalsChart"></canvas>
+            </div>
+
+            <div class="card">
+                <h2>💊 Active Medications</h2>
+                <div id="medList"></div>
+                <div style="margin-top: 20px; border-top: 1px dashed #ccc; padding-top: 10px;">
+                    <h3>Prescribe New Med</h3>
+                    <input type="text" id="newMedName" placeholder="e.g. Lisinopril 10mg" style="width: 100%; padding: 8px; box-sizing: border-box; margin-bottom: 5px;">
+                    <button class="btn-add" onclick="addNewMed()">+ Add Medication</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const client = FHIR.client({ serverUrl: "https://r3.smarthealthit.org" });
+    let myChart = null; 
+    let currentMeds = [];
+
+    // === Drug Class Mapping ===
+    // Maps common medication names and codes to their drug classes
+    const drugClassMap = {
+        // ACE Inhibitors
+        'lisinopril': 'ACE Inhibitor',
+        'enalapril': 'ACE Inhibitor',
+        'ramipril': 'ACE Inhibitor',
+        'captopril': 'ACE Inhibitor',
+        'perindopril': 'ACE Inhibitor',
+        '37801': 'ACE Inhibitor', // RxNorm for lisinopril
+        
+        // Beta Blockers
+        'metoprolol': 'Beta Blocker',
+        'atenolol': 'Beta Blocker',
+        'propranolol': 'Beta Blocker',
+        'carvedilol': 'Beta Blocker',
+        'bisoprolol': 'Beta Blocker',
+        'labetalol': 'Beta Blocker',
+        '6918': 'Beta Blocker', // RxNorm for metoprolol
+        
+        // Calcium Channel Blockers
+        'amlodipine': 'Calcium Channel Blocker',
+        'diltiazem': 'Calcium Channel Blocker',
+        'verapamil': 'Calcium Channel Blocker',
+        'nifedipine': 'Calcium Channel Blocker',
+        '17767': 'Calcium Channel Blocker', // RxNorm for amlodipine
+        
+        // Diuretics
+        'furosemide': 'Diuretic',
+        'hydrochlorothiazide': 'Diuretic',
+        'spironolactone': 'Diuretic',
+        'chlorthalidone': 'Diuretic',
+        '5054': 'Diuretic', // RxNorm for furosemide
+        
+        // Statins
+        'atorvastatin': 'Statin',
+        'simvastatin': 'Statin',
+        'pravastatin': 'Statin',
+        'rosuvastatin': 'Statin',
+        'lovastatin': 'Statin',
+        '83367': 'Statin', // RxNorm for atorvastatin
+        
+        // ARBs (Angiotensin II Receptor Blockers)
+        'losartan': 'ARB',
+        'valsartan': 'ARB',
+        'irbesartan': 'ARB',
+        'candesartan': 'ARB',
+        '52175': 'ARB', // RxNorm for losartan
+        
+        // Anticoagulants
+        'warfarin': 'Anticoagulant',
+        'apixaban': 'Anticoagulant',
+        'dabigatran': 'Anticoagulant',
+        'rivaroxaban': 'Anticoagulant',
+        '4324': 'Anticoagulant', // RxNorm for warfarin
+        
+        // Antiplatelets
+        'aspirin': 'Antiplatelet',
+        'clopidogrel': 'Antiplatelet',
+        'ticagrelor': 'Antiplatelet',
+        '7980': 'Antiplatelet', // RxNorm for aspirin
+        
+        // Nitrates
+        'nitroglycerin': 'Nitrate',
+        'isosorbide': 'Nitrate',
+        
+        // Other cardiac drugs
+        'digoxin': 'Cardiac Glycoside',
+        'dopamine': 'Inotrope',
+        'dobutamine': 'Inotrope'
+    };
+
+    // Function to determine drug class from medication name or code
+    function getDrugClass(medName, medResource) {
+        if (!medName) return 'Other';
+        
+        const nameLower = medName.toLowerCase();
+        
+        // Check if name matches any known drug class
+        for (const [key, drugClass] of Object.entries(drugClassMap)) {
+            if (nameLower.includes(key)) {
+                return drugClass;
+            }
+        }
+        
+        // Try to extract from RxNorm code
+        if (medResource && medResource.code && medResource.code.coding) {
+            for (const coding of medResource.code.coding) {
+                if (coding.system && coding.system.includes('rxnorm')) {
+                    const code = coding.code;
+                    if (drugClassMap[code]) {
+                        return drugClassMap[code];
+                    }
+                }
+            }
+        }
+        
+        return 'Other';
+    }
+
+    // === Patient Data Inspector for Console ===
+    // Use inspectPatient("patient-id") to check available data
+    window.inspectPatient = async function(patientId) {
+        console.log(`\n========== INSPECTING PATIENT: ${patientId} ==========`);
+        try {
+            const [pt, bp, hr, weight, height, meds] = await Promise.all([
+                client.request(`Patient/${patientId}`),
+                client.request(`Observation?patient=${patientId}&code=55284-4&_sort=date&_count=50`),
+                client.request(`Observation?patient=${patientId}&code=8867-4&_sort=date&_count=50`),
+                client.request(`Observation?patient=${patientId}&code=29463-7&_sort=-date&_count=1`),
+                client.request(`Observation?patient=${patientId}&code=8302-2&_sort=-date&_count=1`),
+                client.request(`MedicationRequest?patient=${patientId}&status=active`)
+            ]);
+
+            // Patient Demographics
+            const name = pt.name ? `${pt.name[0].given.join(" ")} ${pt.name[0].family}` : "Unknown";
+            console.log(`✓ Patient Demographics: ${name} (DOB: ${pt.birthDate || 'N/A'})`);
+
+            // Blood Pressure Data
+            console.log(`✓ Blood Pressure Records: ${bp.entry ? bp.entry.length : 0} entries`);
+            if (bp.entry && bp.entry.length > 0) {
+                console.log(`  - First: ${bp.entry[0].resource.effectiveDateTime}`);
+                console.log(`  - Last: ${bp.entry[bp.entry.length - 1].resource.effectiveDateTime}`);
+            }
+
+            // Heart Rate Data
+            console.log(`✓ Heart Rate Records: ${hr.entry ? hr.entry.length : 0} entries`);
+            if (hr.entry && hr.entry.length > 0) {
+                console.log(`  - First: ${hr.entry[0].resource.effectiveDateTime}`);
+                console.log(`  - Last: ${hr.entry[hr.entry.length - 1].resource.effectiveDateTime}`);
+            }
+
+            // Weight Data
+            console.log(`✓ Weight Data: ${weight.entry ? weight.entry.length : 0} entries`);
+            if (weight.entry && weight.entry.length > 0) {
+                console.log(`  - Latest: ${weight.entry[0].resource.valueQuantity.value} ${weight.entry[0].resource.valueQuantity.unit}`);
+            }
+
+            // Height Data
+            console.log(`✓ Height Data: ${height.entry ? height.entry.length : 0} entries`);
+            if (height.entry && height.entry.length > 0) {
+                console.log(`  - Latest: ${height.entry[0].resource.valueQuantity.value} ${height.entry[0].resource.valueQuantity.unit}`);
+            }
+
+            // Medications
+            console.log(`✓ Active Medications: ${meds.entry ? meds.entry.length : 0} entries`);
+            if (meds.entry) {
+                meds.entry.forEach((med, idx) => {
+                    const r = med.resource;
+                    let medName = "Unknown";
+                    if (r.medicationCodeableConcept && r.medicationCodeableConcept.text) {
+                        medName = r.medicationCodeableConcept.text;
+                    } else if (r.medicationCodeableConcept && r.medicationCodeableConcept.coding) {
+                        medName = r.medicationCodeableConcept.coding[0].display || "Unknown";
+                    } else if (r.medicationReference && r.medicationReference.display) {
+                        medName = r.medicationReference.display;
+                    }
+                    console.log(`  ${idx + 1}. ${medName}`);
+                });
+            }
+
+            console.log(`\n✅ SUMMARY: Patient has all data types available: ${bp.entry && hr.entry && weight.entry && height.entry ? 'YES' : 'INCOMPLETE'}`);
+            console.log(`========== END INSPECTION ==========\n`);
+
+        } catch (error) {
+            console.error(`❌ Error inspecting patient ${patientId}:`, error);
+        }
+    };
+
+    // === Batch Inspector for Multiple Patients ===
+    // Use batchInspectPatients(["id1", "id2", ...]) to check multiple patients
+    window.batchInspectPatients = async function(patientIds) {
+        console.log(`\n🔍 BATCH INSPECTION STARTING for ${patientIds.length} patients...\n`);
+        for (const id of patientIds) {
+            await inspectPatient(id);
+        }
+        console.log("\n✅ BATCH INSPECTION COMPLETE\n");
+    };
+
+    // Load patient list on page load
+    window.onload = async function() {
+        const select = document.getElementById("patientSelect");
+        select.innerHTML = '<option value="">-- Loading... --</option>';
+
+        // select known good patients identified from find_patients.py
+        const knownGoodPatients = [
+            { id: "1a8ba720-7e93-4884-8d54-eaff2986e457", name: "Patient 1" }, 
+            { id: "2c4c5104-6d23-4c0a-97e9-bd229fc3559c", name: "Patient 2" },
+            { id: "6524a54c-c0ba-448e-b7a8-6838ae8613cd", name: "Patient 3" },
+            { id: "08eb37b0-7fbd-44c1-984a-8a4d3ab3927e", name: "Patient 4" },
+            { id: "82eaeb43-5e94-4ab4-a9e1-f7dcb4665d02", name: "Patient 5" },
+            { id: "e7e0bcbf-1989-4ddb-b1d6-543d5a9f2e62", name: "Patient 6" },
+            { id: "7ae00a38-d011-4744-8d88-06e9824ac5e5", name: "Patient 7" },
+            { id: "267476b8-4e50-4a1f-b68c-1e5f79837ce8", name: "Patient 8" },
+            { id: "0d4b2e7b-aafb-4631-adff-d5fa638428a2", name: "Patient 9" },
+            { id: "6051d0c7-c20a-4537-b9b9-5615be51e9f0", name: "Patient 10" }
+        ];
+
+        try {
+            const response = await client.request("Patient?_count=5");
+            select.innerHTML = '<option value="">-- Select a Patient --</option>';
+
+            knownGoodPatients.forEach(p => {
+                const option = document.createElement("option");
+                option.value = p.id;
+                option.innerHTML = `⭐ ${p.name}`;
+                option.style.fontWeight = "bold";
+                select.appendChild(option);
+            });
+        } catch (e) {
+            console.error(e);
+            alert("Error connecting to FHIR server");
+        }
+    };
+
+    async function loadPatientData() {
+        const patientId = document.getElementById("patientSelect").value;
+        if (!patientId) return;
+
+        document.getElementById("loading").style.display = "block";
+        document.getElementById("dashboard").style.display = "none";
+
+        try {
+            // retrieve all necessary data in parallel
+            const [pt, bp, weight, height, meds] = await Promise.all([
+                client.request(`Patient/${patientId}`),
+                client.request(`Observation?patient=${patientId}&code=55284-4&_sort=date&_count=50`),
+                client.request(`Observation?patient=${patientId}&code=29463-7&_sort=date&_count=50`),
+                client.request(`Observation?patient=${patientId}&code=8302-2&_sort=date&_count=50`),
+                client.request(`MedicationRequest?patient=${patientId}&status=active`)
+            ]);
+
+            renderDemographics(pt);
+            calculateBMI(weight, height);
+            calculateBPStatus(bp);
+            renderChart(bp, weight, height); //  now takes weight and height for BMI
+            processMedications(meds); 
+
+            document.getElementById("loading").style.display = "none";
+            document.getElementById("dashboard").style.display = "block";
+
+        } catch (error) {
+            console.error(error);
+            document.getElementById("loading").innerText = "Error loading data.";
+        }
+    }
+
+    // --- Medication name ---
+    function processMedications(medData) {
+        if (!medData.entry) {
+            currentMeds = [];
+            renderMedList();
+        } else {
+            // First, collect all medication reference IDs that need to be fetched
+            const medRefIds = [];
+            
+            medData.entry.forEach(e => {
+                const r = e.resource;
+                if (r.medicationReference && r.medicationReference.reference) {
+                    // Extract medication ID from reference like "Medication/def8be59-0134-4e98-990a-3e97a970c85e"
+                    const medId = r.medicationReference.reference.split('/')[1];
+                    medRefIds.push({ medId, requestId: r.id });
+                }
+            });
+            
+            // Fetch all medication details in parallel
+            if (medRefIds.length > 0) {
+                Promise.all(
+                    medRefIds.map(item => 
+                        client.request(`Medication/${item.medId}`).catch(err => {
+                            console.warn(`Failed to fetch medication ${item.medId}:`, err);
+                            return null;
+                        })
+                    )
+                ).then(medications => {
+                    // Build a map of medication ID to medication data
+                    const medMap = {};
+                    medRefIds.forEach((item, idx) => {
+                        if (medications[idx]) {
+                            medMap[item.requestId] = medications[idx];
+                        }
+                    });
+                    
+                    // Now process medications with fetched data
+                    currentMeds = medData.entry.map(e => {
+                        let name = "Unknown Med";
+                        const r = e.resource;
+                        
+                        console.log("Processing medication request:", r);
+
+                        // Try to get medication data from the fetched resource
+                        const medResource = medMap[r.id];
+                        if (medResource) {
+                            if (medResource.code && medResource.code.text) {
+                                name = medResource.code.text;
+                            } else if (medResource.code && medResource.code.coding && medResource.code.coding[0]) {
+                                name = medResource.code.coding[0].display || medResource.code.coding[0].code;
+                            }
+                        }
+                        
+                        // Fallback: Try parsing from the request itself
+                        if (name === "Unknown Med") {
+                            if (r.medicationCodeableConcept) {
+                                if (r.medicationCodeableConcept.text) {
+                                    name = r.medicationCodeableConcept.text;
+                                } else if (r.medicationCodeableConcept.coding && r.medicationCodeableConcept.coding.length > 0) {
+                                    const coding = r.medicationCodeableConcept.coding[0];
+                                    name = coding.display || coding.code;
+                                }
+                            }
+                        }
+                        
+                        // Determine drug class
+                        const drugClass = getDrugClass(name, medResource);
+                        
+                        console.log("Parsed medication name:", name, "Drug Class:", drugClass);
+                        
+                        return { id: r.id, name: name, status: 'active' };
+                    });
+                    
+                    renderMedList();
+                });
+            } else {
+                // No medication references to fetch, process directly
+                currentMeds = medData.entry.map(e => {
+                    let name = "Unknown Med";
+                    const r = e.resource;
+                    
+                    console.log("Processing medication:", r);
+
+                    if (r.medicationCodeableConcept) {
+                        if (r.medicationCodeableConcept.text) {
+                            name = r.medicationCodeableConcept.text;
+                        } else if (r.medicationCodeableConcept.coding && r.medicationCodeableConcept.coding.length > 0) {
+                            const coding = r.medicationCodeableConcept.coding[0];
+                            name = coding.display || coding.code;
+                        }
+                    }
+                    
+                    // Determine drug class
+                    const drugClass = getDrugClass(name, null);
+                    
+                    console.log("Parsed medication name:", name, "Drug Class:", drugClass);
+                    
+                    return { id: r.id, name: name, status: 'active' };
+                });
+                
+                renderMedList();
+            }
+        }
+    }
+
+    function renderMedList() {
+        const container = document.getElementById("medList");
+        container.innerHTML = "";
+        if (currentMeds.length === 0) {
+            container.innerHTML = "<p style='color:#777;'>No active medications found for this patient.</p>";
+            return;
+        }
+        currentMeds.forEach((med, index) => {
+            const div = document.createElement("div");
+            div.className = `med-item ${med.status === 'stopped' ? 'med-stopped' : ''}`;
+            div.innerHTML = `<span>💊 ${med.name}</span> ${med.status === 'active' ? `<button class="btn-stop" onclick="stopMed(${index})">Stop</button>` : ''}`;
+            container.appendChild(div);
+        });
+    }
+
+    // --- Modified: Chart now shows Blood Pressure (Mean) vs BMI ---
+    function renderChart(bpData, weightData, heightData) {
+        const ctx = document.getElementById('vitalsChart').getContext('2d');
+        
+        // 1. Create a Map to combine data from the same date
+        const dataMap = {};
+
+        // Extract Blood Pressure (Calculate mean of systolic and diastolic)
+        if (bpData.entry) {
+            bpData.entry.forEach(e => {
+                if (!e.resource.effectiveDateTime) return;
+                const date = e.resource.effectiveDateTime.split('T')[0];
+                
+                // Get systolic and diastolic
+                let systolic = null;
+                let diastolic = null;
+                
+                if (e.resource.component) {
+                    const sysComponent = e.resource.component.find(c => c.code.coding[0].code === "8480-6");
+                    const diaComponent = e.resource.component.find(c => c.code.coding[0].code === "8462-4");
+                    
+                    if (sysComponent) systolic = sysComponent.valueQuantity.value;
+                    if (diaComponent) diastolic = diaComponent.valueQuantity.value;
+                }
+                
+                // Calculate mean BP if both available, otherwise use systolic
+                if (systolic && diastolic) {
+                    const meanBP = (systolic + diastolic) / 2;
+                    if (!dataMap[date]) dataMap[date] = {};
+                    dataMap[date].bp = meanBP;
+                } else if (systolic) {
+                    if (!dataMap[date]) dataMap[date] = {};
+                    dataMap[date].bp = systolic;
+                }
+            });
+        }
+
+        // Extract Weight
+        if (weightData.entry) {
+            weightData.entry.forEach(e => {
+                if (!e.resource.effectiveDateTime) return;
+                const date = e.resource.effectiveDateTime.split('T')[0];
+                if (!dataMap[date]) dataMap[date] = {};
+                dataMap[date].weight = e.resource.valueQuantity.value;
+            });
+        }
+
+        // Extract Height
+        if (heightData.entry) {
+            heightData.entry.forEach(e => {
+                if (!e.resource.effectiveDateTime) return;
+                const date = e.resource.effectiveDateTime.split('T')[0];
+                if (!dataMap[date]) dataMap[date] = {};
+                dataMap[date].height = e.resource.valueQuantity.value;
+            });
+        }
+
+        // 2. Calculate BMI for each date and convert to sorted arrays
+        const sortedDates = Object.keys(dataMap).sort();
+        const bpValues = [];
+        const bmiValues = [];
+
+        sortedDates.forEach(date => {
+            const data = dataMap[date];
+            bpValues.push(data.bp || null);
+            
+            // Calculate BMI if both weight and height are available
+            if (data.weight && data.height) {
+                const heightInMeters = data.height / 100;
+                const bmi = data.weight / (heightInMeters * heightInMeters);
+                bmiValues.push(parseFloat(bmi.toFixed(1)));
+            } else {
+                bmiValues.push(null);
+            }
+        });
+
+        // If no data available, show message
+        if (sortedDates.length === 0) {
+            console.log("No graph data available.");
+        }
+
+        if (myChart) myChart.destroy();
+
+        myChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: sortedDates,
+                datasets: [
+                    {
+                        label: 'Blood Pressure (mmHg)',
+                        data: bpValues,
+                        borderColor: 'rgb(255, 99, 132)',
+                        backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                        yAxisID: 'y',
+                        tension: 0.1
+                    },
+                    {
+                        label: 'BMI (kg/m²)',
+                        data: bmiValues,
+                        borderColor: 'rgb(75, 192, 75)',
+                        backgroundColor: 'rgba(75, 192, 75, 0.2)',
+                        borderDash: [5, 5],
+                        yAxisID: 'y1',
+                        tension: 0.1,
+                        spanGaps: true
+                    },
+                    {
+                        // Reference line for high BP (140 mmHg - Stage 2 Hypertension threshold)
+                        label: 'High BP Threshold (140)',
+                        data: Array(sortedDates.length).fill(140),
+                        borderColor: 'rgba(255, 0, 0, 0.5)',
+                        borderDash: [10, 5],
+                        borderWidth: 2,
+                        fill: false,
+                        pointRadius: 0,
+                        yAxisID: 'y',
+                        tension: 0
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                interaction: {
+                    mode: 'index',
+                    intersect: false,
+                },
+                scales: {
+                    y: {
+                        type: 'linear',
+                        display: true,
+                        position: 'left',
+                        title: { display: true, text: 'Blood Pressure (mmHg)' }
+                    },
+                    y1: {
+                        type: 'linear',
+                        display: true,
+                        position: 'right',
+                        grid: { drawOnChartArea: false },
+                        title: { display: true, text: 'BMI (kg/m²)' },
+                        suggestedMin: 15,
+                        suggestedMax: 35
+                    }
+                }
+            }
+        });
+    }
+
+    function renderDemographics(pt) {
+        const name = pt.name ? `${pt.name[0].given.join(" ")} ${pt.name[0].family}` : "Unknown";
+        document.getElementById("patName").innerText = `Name: ${name}`;
+        document.getElementById("patGender").innerText = `Gender: ${pt.gender || '-'}`;
+        document.getElementById("patAge").innerText = `DOB: ${pt.birthDate || '-'}`;
+    }
+
+    function calculateBMI(wData, hData) {
+        const bmiDiv = document.getElementById("patBMI");
+        if (wData.entry && hData.entry) {
+            const wVal = wData.entry[0].resource.valueQuantity.value;
+            const hVal = hData.entry[0].resource.valueQuantity.value;
+            const heightInMeters = hVal / 100; 
+            const bmi = (wVal / (heightInMeters * heightInMeters)).toFixed(1);
+            let status = bmi > 25 ? "(Overweight)" : (bmi < 18.5 ? "(Underweight)" : "(Normal)");
+            bmiDiv.innerHTML = `BMI: <strong>${bmi}</strong> ${status}`;
+            bmiDiv.style.color = bmi > 25 ? "orange" : "green";
+        } else {
+            bmiDiv.innerText = "BMI: Data Missing";
+            bmiDiv.style.color = "gray";
+        }
+    }
+
+    function calculateBPStatus(bpData) {
+        const bpDiv = document.getElementById("patBP");
+        if (bpData.entry && bpData.entry.length > 0) {
+            // Get the latest BP reading
+            const latestBP = bpData.entry[0].resource;
+            let systolic = null;
+            let diastolic = null;
+            
+            if (latestBP.component) {
+                const sysComponent = latestBP.component.find(c => c.code.coding[0].code === "8480-6");
+                const diaComponent = latestBP.component.find(c => c.code.coding[0].code === "8462-4");
+                
+                if (sysComponent) systolic = sysComponent.valueQuantity.value;
+                if (diaComponent) diastolic = diaComponent.valueQuantity.value;
+            }
+            
+            if (systolic) {
+                const meanBP = diastolic ? (systolic + diastolic) / 2 : systolic;
+                let status, color;
+                
+                if (systolic >= 140) {
+                    status = "(High - Stage 2)";
+                    color = "red";
+                } else if (systolic >= 130) {
+                    status = "(Elevated)";
+                    color = "orange";
+                } else {
+                    status = "(Normal)";
+                    color = "green";
+                }
+                
+                const displayBP = diastolic ? `${systolic}/${diastolic}` : `${systolic}`;
+                bpDiv.innerHTML = `BP: <strong>${displayBP}</strong> ${status}`;
+                bpDiv.style.color = color;
+            } else {
+                bpDiv.innerText = "BP: Data Missing";
+                bpDiv.style.color = "gray";
+            }
+        } else {
+            bpDiv.innerText = "BP: Data Missing";
+            bpDiv.style.color = "gray";
+        }
+    }
+
+    function addNewMed() {
+        const name = document.getElementById("newMedName").value;
+        if (!name) return alert("Enter med name");
+        currentMeds.push({ id: "temp-" + Date.now(), name: name, status: "active" });
+        document.getElementById("newMedName").value = "";
+        renderMedList();
+    }
+
+    function stopMed(index) {
+        if(confirm("Stop this medication?")) {
+            currentMeds[index].status = "stopped";
+            renderMedList();
+        }
+    }
+</script>
+
+</body>
+</html>
