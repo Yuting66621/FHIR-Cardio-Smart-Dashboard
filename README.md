@@ -133,19 +133,15 @@ The application includes comprehensive console logging for troubleshooting:
 
 ## Course Information
 
-**Course**: [INSERT COURSE NAME AND NUMBER HERE]  
-**Institution**: [INSERT INSTITUTION NAME HERE]  
+**Course**: App Development with JS and FHIR (CHIP 690-297)
+**Institution**: University of North Carolina at Chapel Hill
 **Term**: Fall 2025  
-**Instructor**: [INSERT INSTRUCTOR NAME HERE]  
-**Project Type**: Final Project  
+**Instructor**: Jon Tweedy
+**Project Type**: Final Project   
 
 ## Author
+Yuting Sun
 
-Developed as a final project for healthcare IT education.
-
-## License
-
-This project is provided as-is for educational purposes.
 
 ## Acknowledgments
 
